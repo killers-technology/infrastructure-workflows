@@ -1,0 +1,14 @@
+# Security scanning of the skeleton: misconfigurations such as an unencrypted
+# bucket or a security group open to the world.
+#
+# HIGH and CRITICAL findings fail the check. A deliberate exception is written
+# next to the resource, with the reason, so it shows up in the review:
+#
+#   #trivy:ignore:AWS-0089 access logs of the log bucket itself would loop
+severity:
+  - HIGH
+  - CRITICAL
+exit-code: 1
+misconfiguration:
+  scanners:
+    - terraform

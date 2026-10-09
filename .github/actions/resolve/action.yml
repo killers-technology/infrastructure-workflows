@@ -1,0 +1,63 @@
+name: resolve
+description: >-
+  Works out the project, the environment and the definitions of one pipeline run,
+  following the pipeline contract (docs/conventions.md). Expects the caller's
+  repository to be checked out in the workspace.
+
+inputs:
+  plan-role:
+    description: Role name assumed on pull requests. Empty means github-<project>-plan.
+    required: false
+    default: ""
+  apply-role:
+    description: Role name assumed after a merge. Empty means github-<project>-apply.
+    required: false
+    default: ""
+  region:
+    description: Manual runs only. us-east-1 or us-west-2 runs that region's definitions; global runs the global ones. Empty runs everything.
+    required: false
+    default: ""
+
+outputs:
+  project:
+    description: Project name, from the repository name.
+    value: ${{ steps.resolve.outputs.project }}
+  kind:
+    description: workload, platform or single-env, from the folders under definitions/.
+    value: ${{ steps.resolve.outputs.kind }}
+  mode:
+    description: plan, apply or none.
+    value: ${{ steps.resolve.outputs.mode }}
+  environment:
+    description: The environment (and GitHub environment) this run targets. Empty when mode is none.
+    value: ${{ steps.resolve.outputs.environment }}
+  role:
+    description: The role name assumed in every account of this run.
+    value: ${{ steps.resolve.outputs.role }}
+  definitions:
+    description: JSON list of every selected definition (path, scope, region, account_id, role_arn).
+    value: ${{ steps.resolve.outputs.definitions }}
+  global:
+    description: JSON list of the selected global definitions.
+    value: ${{ steps.resolve.outputs.global }}
+  regional:
+    description: JSON list of the selected regional definitions.
+    value: ${{ steps.resolve.outputs.regional }}
+
+runs:
+  using: composite
+  steps:
+    - id: resolve
+      shell: bash
+      env:
+        # Everything that comes from the event goes through the environment, never
+        # into the script text: branch names and inputs are user-controlled.
+        EVENT_NAME: ${{ github.event_name }}
+        BASE_REF: ${{ github.base_ref }}
+        REF_NAME: ${{ github.ref_name }}
+        REF_TYPE: ${{ github.ref_type }}
+        REPOSITORY: ${{ github.repository }}
+        REGION_INPUT: ${{ inputs.region }}
+        PLAN_ROLE: ${{ inputs.plan-role }}
+        APPLY_ROLE: ${{ inputs.apply-role }}
+      run: python3 -I "$GITHUB_ACTION_PATH/resolve.py" "$GITHUB_WORKSPACE"

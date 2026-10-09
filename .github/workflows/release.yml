@@ -1,0 +1,55 @@
+# Releases the pipeline like a module. On every merge to main, semantic-release reads the
+# conventional commits since the last tag (fix: patch, feat: minor, BREAKING CHANGE: major) and,
+# if there is something to release:
+#
+#   1. writes the new section of CHANGELOG.md,
+#   2. points the reusable workflow at the actions of the new version (scripts/bump-internal-refs.sh),
+#   3. commits both to main as "chore(release): vX.Y.Z [skip ci]" and tags that commit vX.Y.Z,
+#   4. publishes the GitHub release with the same notes.
+#
+# It runs as the release GitHub App, the one identity allowed past the rulesets on main (to push
+# the release commit) and on v* tags (to create them). Its key is a secret of the `release`
+# environment, which only accepts main. All of that is configured in infrastructure-github.
+name: release
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    environment: release
+    steps:
+      - id: app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
+      - name: semantic-release
+        env:
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: >-
+          npx --yes
+          -p semantic-release@25.0.9
+          -p @semantic-release/changelog@7.0.0
+          -p @semantic-release/exec@7.1.0
+          -p @semantic-release/git@11.0.1
+          semantic-release

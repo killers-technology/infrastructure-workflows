@@ -1,0 +1,75 @@
+# Checks for this repository itself. A change to the pipeline has to pass these before it can be
+# merged and released; the job names are the required status checks on main (infrastructure-github).
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  actionlint:
+    name: actionlint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - run: .github/actions/static-checks/install.sh actionlint
+      # shellcheck is preinstalled on the runner, so the run: scripts are checked too.
+      - run: actionlint -color
+
+  policies:
+    name: policies
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - run: .github/actions/static-checks/install.sh conftest
+      - name: Policy unit tests
+        run: conftest verify --policy .github/actions/static-checks/policy --show-builtin-errors
+      - name: Policy formatting
+        run: conftest fmt --check .github/actions/static-checks/policy
+
+  resolver:
+    name: resolver
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - run: python3 -m unittest discover -s tests -v
+      - run: shellcheck .github/actions/*/*.sh scripts/*.sh
+
+  # The static-checks and module-checks actions, from this commit, against a project and a module
+  # that follow the conventions. The reusable workflows still point at the last release here; the
+  # new refs only exist once tagged.
+  static-checks:
+    name: static-checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/static-checks
+        with:
+          working-directory: tests/fixtures/infrastructure-aws-example
+
+  module-checks:
+    name: module-checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/module-checks
+        with:
+          working-directory: tests/fixtures/terraform-aws-example

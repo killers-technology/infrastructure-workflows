@@ -1,0 +1,107 @@
+# The one pipeline every Terraform module repository (terraform-aws-<name>) calls, at a pinned
+# version. A module gets the same treatment as the pipeline itself: defined once, and a version
+# you can trust.
+#
+#   jobs:
+#     module:
+#       uses: killers-technology/infrastructure-workflows/.github/workflows/module.yml@v3.3.0
+#       permissions:
+#         contents: read
+#
+# Jobs:
+#
+#   checks   pull requests and pushes: format and validate, lint, security scan, the module
+#            rules of the policies, and the module's own tests (terraform test, mocked providers)
+#   release  push to main, after the checks pass: semantic-release reads the conventional commits,
+#            writes the changelog, tags vX.Y.Z and publishes the release. Consumers pin that tag:
+#            git::https://github.com/killers-technology/terraform-aws-<name>.git?ref=vX.Y.Z
+#
+# Like terraform.yml, the actions below are referenced at this file's own version; the release
+# of this repository rewrites those refs (scripts/bump-internal-refs.sh) before it tags.
+
+name: module
+
+on:
+  workflow_call:
+    inputs:
+      terraform-version:
+        description: Terraform version to install.
+        type: string
+        required: false
+        default: 1.16.4
+    secrets:
+      MODULES_APP_PRIVATE_KEY:
+        description: >-
+          Only for a module that calls another private module: the private key of the modules-reader
+          GitHub App, so that terraform init can fetch it. Its client ID is the MODULES_APP_CLIENT_ID variable.
+        required: false
+      RELEASE_APP_PRIVATE_KEY:
+        description: >-
+          Don't pass it. It's a secret of the module repository's `release` environment, which only
+          accepts main; the release job runs in that environment, where it takes precedence.
+        required: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  checks:
+    name: checks
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: killers-technology/infrastructure-workflows/.github/actions/module-access@v3.3.0
+        with:
+          client-id: ${{ vars.MODULES_APP_CLIENT_ID }}
+          private-key: ${{ secrets.MODULES_APP_PRIVATE_KEY }}
+
+      - uses: killers-technology/infrastructure-workflows/.github/actions/module-checks@v3.3.0
+        with:
+          terraform-version: ${{ inputs.terraform-version }}
+
+  release:
+    name: release
+    needs: checks
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    # The release app's key is a secret of this environment, and the environment only accepts main.
+    environment: release
+    permissions:
+      contents: read
+    concurrency:
+      group: release
+      cancel-in-progress: false
+    steps:
+      # The release app is the only actor allowed to push the release commit to main and to
+      # create v* tags, which nobody can move or delete (rulesets in infrastructure-github).
+      - id: app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
+      # The module's .releaserc.json picks the plugins; these are the ones it may use.
+      - name: semantic-release
+        env:
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: >-
+          npx --yes
+          -p semantic-release@25.0.9
+          -p @semantic-release/changelog@7.0.0
+          -p @semantic-release/git@11.0.1
+          semantic-release

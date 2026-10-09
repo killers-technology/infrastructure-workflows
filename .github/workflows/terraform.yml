@@ -1,0 +1,410 @@
+# The one pipeline every infrastructure repository calls, at a pinned version:
+#
+#   jobs:
+#     terraform:
+#       uses: killers-technology/infrastructure-workflows/.github/workflows/terraform.yml@v3.2.0
+#       permissions:
+#         id-token: write
+#         contents: read
+#         pull-requests: write
+#
+# Jobs, for the event that triggered the caller (the contract is in docs/conventions.md):
+#
+#   setup           project from the repository name; environment from the event and the branch;
+#                   definitions from definitions/<env>/**/backend.hcl; account from each terraform.tfvars
+#   checks          format and validate, lint, security scan, policy checks; nothing plans before they pass
+#   plan            pull requests: one job per definition, plan role, the plan posted on the pull request
+#   apply-global    push or manual run: the global definitions first, in the GitHub environment, so
+#                   GitHub enforces the branch and the approval before the job gets a token
+#   apply-regional  then one job per region, in parallel, even if a global job failed;
+#                   one region failing never cancels another (fail-fast: false)
+#
+# The actions below are referenced at this file's own version. The release rewrites those refs
+# (scripts/bump-internal-refs.sh) before it tags, so tag vX.Y.Z only runs code from vX.Y.Z.
+#
+# Private module repositories: a caller whose skeleton uses git::https://github.com/killers-technology/terraform-aws-*
+# sources passes MODULES_APP_PRIVATE_KEY; every job that runs terraform init then reads them with a
+# short-lived, read-only token (module-access).
+
+name: terraform
+
+on:
+  workflow_call:
+    inputs:
+      terraform-version:
+        description: Terraform version to install.
+        type: string
+        required: false
+        default: 1.16.4
+      plan-role:
+        description: Role name assumed on pull requests, in the account of each definition. Empty means github-<project>-plan.
+        type: string
+        required: false
+        default: ""
+      apply-role:
+        description: Role name assumed after a merge, in the account of each definition. Empty means github-<project>-apply.
+        type: string
+        required: false
+        default: ""
+      plan-role-duration-seconds:
+        description: Session length plan jobs ask for. Must not exceed the plan role's maximum session duration.
+        type: number
+        required: false
+        default: 3600
+      role-duration-seconds:
+        description: >-
+          Session length apply jobs ask for. It has to cover the slowest apply of the project, and the
+          apply role's maximum session duration has to allow it: both default to one hour in AWS.
+        type: number
+        required: false
+        default: 14400
+    secrets:
+      GH_APP_PRIVATE_KEY:
+        description: >-
+          Only for a project whose Terraform manages GitHub (infrastructure-github): the private key of the
+          GitHub App the provider signs in as. Exported as TF_VAR_github_app_pem_file, next to
+          TF_VAR_github_app_id and TF_VAR_github_app_installation_id from the GH_APP_ID and
+          GH_APP_INSTALLATION_ID variables. In apply jobs, a secret or variable of the same name on the
+          GitHub environment takes precedence.
+        required: false
+      MODULES_APP_PRIVATE_KEY:
+        description: >-
+          For a project whose skeleton uses the private module repositories (terraform-aws-*): the private
+          key of the modules-reader GitHub App, whose client ID is the MODULES_APP_CLIENT_ID variable. Every
+          job that runs terraform init then gets a read-only token for those repositories. Without it, only
+          public module sources can be fetched.
+        required: false
+
+env:
+  TF_IN_AUTOMATION: "true"
+  TF_INPUT: "false"
+  # Every STS call, the provider's included, goes to the endpoint of the job's own region.
+  AWS_STS_REGIONAL_ENDPOINTS: regional
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  setup:
+    name: setup
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      project: ${{ steps.resolve.outputs.project }}
+      mode: ${{ steps.resolve.outputs.mode }}
+      environment: ${{ steps.resolve.outputs.environment }}
+      definitions: ${{ steps.resolve.outputs.definitions }}
+      global: ${{ steps.resolve.outputs.global }}
+      regional: ${{ steps.resolve.outputs.regional }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - id: resolve
+        uses: killers-technology/infrastructure-workflows/.github/actions/resolve@v3.2.0
+        with:
+          plan-role: ${{ inputs.plan-role }}
+          apply-role: ${{ inputs.apply-role }}
+          # The caller's workflow_dispatch input. The github context is the caller's.
+          region: ${{ github.event.inputs.region }}
+
+  checks:
+    name: checks
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: killers-technology/infrastructure-workflows/.github/actions/module-access@v3.2.0
+        with:
+          client-id: ${{ vars.MODULES_APP_CLIENT_ID }}
+          private-key: ${{ secrets.MODULES_APP_PRIVATE_KEY }}
+
+      - uses: killers-technology/infrastructure-workflows/.github/actions/static-checks@v3.2.0
+        with:
+          terraform-version: ${{ inputs.terraform-version }}
+
+  plan:
+    name: plan ${{ matrix.definition.path }}
+    needs: [setup, checks]
+    if: needs.setup.outputs.mode == 'plan'
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+      pull-requests: write
+    # A newer push to the same pull request queues behind the running plan; plans hold the state lock too.
+    concurrency:
+      group: plan-${{ github.event.pull_request.number }}-${{ matrix.definition.path }}
+      cancel-in-progress: false
+    strategy:
+      fail-fast: false
+      matrix:
+        definition: ${{ fromJSON(needs.setup.outputs.definitions) }}
+    env:
+      DEFINITION: ${{ matrix.definition.path }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: killers-technology/infrastructure-workflows/.github/actions/module-access@v3.2.0
+        with:
+          client-id: ${{ vars.MODULES_APP_CLIENT_ID }}
+          private-key: ${{ secrets.MODULES_APP_PRIVATE_KEY }}
+
+      # Straight into the definition's account, through the STS endpoint of its own region.
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ matrix.definition.role_arn }}
+          aws-region: ${{ matrix.definition.region }}
+          role-duration-seconds: ${{ inputs.plan-role-duration-seconds }}
+          role-session-name: ${{ github.event.repository.name }}-${{ github.run_id }}-${{ github.run_attempt }}
+          allowed-account-ids: ${{ matrix.definition.account_id }}
+
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: ${{ inputs.terraform-version }}
+          terraform_wrapper: false
+
+      - name: terraform init
+        run: |
+          terraform -chdir=terraform init -no-color \
+            -backend-config="../definitions/${DEFINITION}/backend.hcl"
+
+      - name: terraform plan
+        id: plan
+        env:
+          TF_VAR_pipeline_role: plan
+          # GitHub App credentials, for a skeleton that manages GitHub (infrastructure-github).
+          # Terraform ignores TF_VAR_ variables that a skeleton doesn't declare.
+          TF_VAR_github_app_id: ${{ vars.GH_APP_ID }}
+          TF_VAR_github_app_installation_id: ${{ vars.GH_APP_INSTALLATION_ID }}
+          TF_VAR_github_app_pem_file: ${{ secrets.GH_APP_PRIVATE_KEY }}
+        run: |
+          # For projects whose providers log into a second account themselves (network's prod
+          # definitions publish into the Shared Services accounts): a GitHub OIDC token for STS. It's short-lived, so it's fetched right before Terraform reads it.
+          token_file="$RUNNER_TEMP/web-identity-token"
+          trap 'rm -f "$token_file"' EXIT
+          (umask 077 && curl -sSf -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sts.amazonaws.com" | jq -er .value > "$token_file")
+          export TF_VAR_web_identity_token_file="$token_file"
+
+          status=0
+          terraform -chdir=terraform plan -no-color -lock-timeout=10m -detailed-exitcode -out=tfplan \
+            -var-file="../definitions/${DEFINITION}/terraform.tfvars" 2>&1 | tee "$RUNNER_TEMP/plan.log" || status=$?
+
+          case $status in
+            0) result="no changes" ;;
+            2) result="changes" ;;
+            *) result="failed" ;;
+          esac
+          if [[ $result == failed ]]; then
+            cp "$RUNNER_TEMP/plan.log" "$RUNNER_TEMP/plan.txt"
+          else
+            terraform -chdir=terraform show -no-color tfplan > "$RUNNER_TEMP/plan.txt"
+          fi
+          echo "result=$result" >> "$GITHUB_OUTPUT"
+          {
+            echo "### plan \`${DEFINITION}\`: ${result}"
+            grep -E '^(Plan:|No changes\.|Error:)' "$RUNNER_TEMP/plan.txt" | head -n 5 || true
+          } >> "$GITHUB_STEP_SUMMARY"
+          [[ $result != failed ]]
+
+      - name: Post the plan on the pull request
+        if: ${{ !cancelled() && steps.plan.outcome != 'skipped' }}
+        uses: actions/github-script@v9
+        env:
+          RESULT: ${{ steps.plan.outputs.result }}
+        with:
+          script: |
+            const fs = require('fs');
+            const { DEFINITION, RESULT, RUNNER_TEMP } = process.env;
+            const marker = `<!-- terraform-plan:${DEFINITION} -->`;
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const limit = 60000;
+
+            let plan;
+            try {
+              plan = fs.readFileSync(`${RUNNER_TEMP}/plan.txt`, 'utf8').trimEnd();
+            } catch {
+              plan = 'Terraform did not get to plan. See the job log.';
+            }
+            const summary = (plan.match(/^(Plan: .*|No changes\..*|Error: .*)$/m) || [RESULT || 'failed'])[0];
+            let note = '';
+            if (plan.length > limit) {
+              plan = plan.slice(0, limit);
+              note = `\nThe plan is too long for a comment and was cut. The full plan is in the [job log](${runUrl}).\n`;
+            }
+
+            const body = [
+              marker,
+              `#### \`${DEFINITION}\`: ${summary}`,
+              '',
+              '<details><summary>Show plan</summary>',
+              '',
+              '````text',
+              plan,
+              '````',
+              '',
+              '</details>',
+              note,
+              `Commit ${context.payload.pull_request.head.sha.slice(0, 7)}, [run ${context.runId}](${runUrl})`,
+            ].join('\n');
+
+            const issue_number = context.payload.pull_request.number;
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              ...context.repo, issue_number, per_page: 100,
+            });
+            const previous = comments.find((c) => c.user?.type === 'Bot' && c.body?.startsWith(marker));
+            if (previous) {
+              await github.rest.issues.updateComment({ ...context.repo, comment_id: previous.id, body });
+            } else {
+              await github.rest.issues.createComment({ ...context.repo, issue_number, body });
+            }
+
+  apply-global:
+    name: apply ${{ matrix.definition.path }}
+    needs: [setup, checks]
+    if: needs.setup.outputs.mode == 'apply' && needs.setup.outputs.global != '[]'
+    runs-on: ubuntu-latest
+    # GitHub only starts this job from the environment's own branch, after its approval, and only
+    # then issues a token whose subject (repo:<repo>:environment:<env>) the apply role trusts.
+    environment: ${{ needs.setup.outputs.environment }}
+    permissions:
+      id-token: write
+      contents: read
+    # One apply per environment and definition at a time. Never cancelled: an apply cut in half leaves a lock.
+    concurrency:
+      group: apply-${{ matrix.definition.path }}
+      cancel-in-progress: false
+    strategy:
+      fail-fast: false
+      matrix:
+        definition: ${{ fromJSON(needs.setup.outputs.global) }}
+    env:
+      DEFINITION: ${{ matrix.definition.path }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: killers-technology/infrastructure-workflows/.github/actions/module-access@v3.2.0
+        with:
+          client-id: ${{ vars.MODULES_APP_CLIENT_ID }}
+          private-key: ${{ secrets.MODULES_APP_PRIVATE_KEY }}
+
+      # Global definitions run from us-east-1, where the IAM, Organizations and Route 53 control planes live.
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ matrix.definition.role_arn }}
+          aws-region: ${{ matrix.definition.region }}
+          role-duration-seconds: ${{ inputs.role-duration-seconds }}
+          role-session-name: ${{ github.event.repository.name }}-${{ github.run_id }}-${{ github.run_attempt }}
+          allowed-account-ids: ${{ matrix.definition.account_id }}
+
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: ${{ inputs.terraform-version }}
+          terraform_wrapper: false
+
+      - name: terraform init
+        run: |
+          terraform -chdir=terraform init -no-color \
+            -backend-config="../definitions/${DEFINITION}/backend.hcl"
+
+      - name: terraform apply
+        env:
+          TF_VAR_pipeline_role: apply
+          # GitHub App credentials, for a skeleton that manages GitHub (infrastructure-github).
+          # Terraform ignores TF_VAR_ variables that a skeleton doesn't declare.
+          TF_VAR_github_app_id: ${{ vars.GH_APP_ID }}
+          TF_VAR_github_app_installation_id: ${{ vars.GH_APP_INSTALLATION_ID }}
+          TF_VAR_github_app_pem_file: ${{ secrets.GH_APP_PRIVATE_KEY }}
+        run: |
+          token_file="$RUNNER_TEMP/web-identity-token"
+          trap 'rm -f "$token_file"' EXIT
+          (umask 077 && curl -sSf -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sts.amazonaws.com" | jq -er .value > "$token_file")
+          export TF_VAR_web_identity_token_file="$token_file"
+
+          terraform -chdir=terraform apply -no-color -auto-approve -lock-timeout=10m \
+            -var-file="../definitions/${DEFINITION}/terraform.tfvars"
+
+  apply-regional:
+    name: apply ${{ matrix.definition.path }}
+    needs: [setup, checks, apply-global]
+    # !cancelled(): runs after the global jobs even when one of them failed, so a broken global
+    # definition, or a broken primary region, never blocks the healthy region.
+    if: >-
+      ${{ !cancelled()
+      && needs.setup.result == 'success'
+      && needs.checks.result == 'success'
+      && needs.setup.outputs.mode == 'apply'
+      && needs.setup.outputs.regional != '[]' }}
+    runs-on: ubuntu-latest
+    environment: ${{ needs.setup.outputs.environment }}
+    permissions:
+      id-token: write
+      contents: read
+    concurrency:
+      group: apply-${{ matrix.definition.path }}
+      cancel-in-progress: false
+    strategy:
+      fail-fast: false
+      matrix:
+        definition: ${{ fromJSON(needs.setup.outputs.regional) }}
+    env:
+      DEFINITION: ${{ matrix.definition.path }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: killers-technology/infrastructure-workflows/.github/actions/module-access@v3.2.0
+        with:
+          client-id: ${{ vars.MODULES_APP_CLIENT_ID }}
+          private-key: ${{ secrets.MODULES_APP_PRIVATE_KEY }}
+
+      # The login, the state, the lock and the key all live in the job's own region.
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ matrix.definition.role_arn }}
+          aws-region: ${{ matrix.definition.region }}
+          role-duration-seconds: ${{ inputs.role-duration-seconds }}
+          role-session-name: ${{ github.event.repository.name }}-${{ github.run_id }}-${{ github.run_attempt }}
+          allowed-account-ids: ${{ matrix.definition.account_id }}
+
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: ${{ inputs.terraform-version }}
+          terraform_wrapper: false
+
+      - name: terraform init
+        run: |
+          terraform -chdir=terraform init -no-color \
+            -backend-config="../definitions/${DEFINITION}/backend.hcl"
+
+      - name: terraform apply
+        env:
+          TF_VAR_pipeline_role: apply
+          # GitHub App credentials, for a skeleton that manages GitHub (infrastructure-github).
+          # Terraform ignores TF_VAR_ variables that a skeleton doesn't declare.
+          TF_VAR_github_app_id: ${{ vars.GH_APP_ID }}
+          TF_VAR_github_app_installation_id: ${{ vars.GH_APP_INSTALLATION_ID }}
+          TF_VAR_github_app_pem_file: ${{ secrets.GH_APP_PRIVATE_KEY }}
+        run: |
+          token_file="$RUNNER_TEMP/web-identity-token"
+          trap 'rm -f "$token_file"' EXIT
+          (umask 077 && curl -sSf -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sts.amazonaws.com" | jq -er .value > "$token_file")
+          export TF_VAR_web_identity_token_file="$token_file"
+
+          terraform -chdir=terraform apply -no-color -auto-approve -lock-timeout=10m \
+            -var-file="../definitions/${DEFINITION}/terraform.tfvars"

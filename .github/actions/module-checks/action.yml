@@ -1,0 +1,39 @@
+name: module-checks
+description: >-
+  The checks every Terraform module gets on each pull request and before each release:
+  format and validate, lint (tflint), security scan (trivy), the module rules of the
+  organization's policies (conftest) and the module's own tests (terraform test).
+  It reuses ../static-checks: install.sh, .tflint.hcl, trivy.yaml and policy/. That works for
+  a remote reference too, because GitHub downloads the whole repository at the referenced
+  tag, not only this folder, so the sibling folder is always the same version as this one.
+
+inputs:
+  terraform-version:
+    description: Terraform version to install.
+    required: false
+    default: 1.16.4
+  working-directory:
+    description: The module root, the folder that holds its *.tf files.
+    required: false
+    default: .
+
+runs:
+  using: composite
+  steps:
+    - uses: hashicorp/setup-terraform@v4
+      with:
+        terraform_version: ${{ inputs.terraform-version }}
+        terraform_wrapper: false
+
+    - name: Install tflint, trivy and conftest
+      shell: bash
+      run: '"$GITHUB_ACTION_PATH/../static-checks/install.sh" tflint trivy conftest'
+
+    - name: Module checks
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        # tflint --init downloads the AWS ruleset from GitHub releases.
+        GITHUB_TOKEN: ${{ github.token }}
+        TF_IN_AUTOMATION: "true"
+      run: '"$GITHUB_ACTION_PATH/run.sh"'

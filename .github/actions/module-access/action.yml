@@ -1,0 +1,48 @@
+name: module-access
+description: >-
+  Read access to the organization's private module repositories for the rest of the job, so
+  that `terraform init` can fetch git::https://github.com/<owner>/terraform-aws-<name>.git
+  sources. It mints a short-lived installation token of the modules-reader GitHub App (installed
+  on the terraform-aws-* repositories only, Contents: read) and points git at it. Without a
+  client ID and a key it does nothing, and only public sources can be fetched.
+  Use it after actions/checkout: from then on, git sends the token to every
+  https://github.com/<owner>/ URL in the job.
+
+inputs:
+  client-id:
+    description: Client ID of the modules-reader GitHub App (the MODULES_APP_CLIENT_ID variable).
+    required: false
+    default: ""
+  private-key:
+    description: Its private key (the MODULES_APP_PRIVATE_KEY secret).
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - id: token
+      if: inputs.client-id != '' && inputs.private-key != ''
+      uses: actions/create-github-app-token@v3
+      with:
+        client-id: ${{ inputs.client-id }}
+        private-key: ${{ inputs.private-key }}
+        # Every repository of the app's installation, which is the terraform-aws-* repositories.
+        owner: ${{ github.repository_owner }}
+        permission-contents: read
+
+    - name: Fetch private modules with the token
+      if: steps.token.outputs.token != ''
+      shell: bash
+      env:
+        TOKEN: ${{ steps.token.outputs.token }}
+        OWNER: ${{ github.repository_owner }}
+      run: |
+        # Global git config lives in this job's runner only. The token is revoked when the job ends.
+        git config --global "url.https://x-access-token:${TOKEN}@github.com/${OWNER}/.insteadOf" "https://github.com/${OWNER}/"
+        echo "Private module repositories of ${OWNER} are readable for the rest of this job."
+
+    - name: No module access requested
+      if: steps.token.outputs.token == ''
+      shell: bash
+      run: echo "No modules app credentials passed; only public module sources can be fetched."
