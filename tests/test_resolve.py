@@ -18,7 +18,7 @@ ACCOUNTS = {
     "development": "222222222222",
     "staging": "888888888888",
     "non-prod": "444444444444",
-    "prod": "030388906125",
+    "prod": "111111111111",
 }
 
 
@@ -60,13 +60,13 @@ MANAGEMENT = {
     "prod/management/global": {"region": "us-east-1", "account_id": "301697000338"},
     "prod/management/us-east-1": {"region": "us-east-1", "account_id": "301697000338"},
     "prod/management/us-west-2": {"region": "us-west-2", "account_id": "301697000338"},
-    "prod/network-prod/global": {"region": "us-east-1", "account_id": "030388906125"},
-    "prod/shared-services-prod/global": {"region": "us-east-1", "account_id": "493093379423"},
-    "prod/shared-services-prod/us-east-1": {"region": "us-east-1", "account_id": "493093379423"},
-    "prod/shared-services-prod/us-west-2": {"region": "us-west-2", "account_id": "493093379423"},
+    "prod/network-prod/global": {"region": "us-east-1", "account_id": "111111111111"},
+    "prod/shared-services-prod/global": {"region": "us-east-1", "account_id": "555555555555"},
+    "prod/shared-services-prod/us-east-1": {"region": "us-east-1", "account_id": "555555555555"},
+    "prod/shared-services-prod/us-west-2": {"region": "us-west-2", "account_id": "555555555555"},
     "non-prod/network-non-prod/global": {"region": "us-east-1", "account_id": "444444444444"},
-    "non-prod/shared-services-non-prod/global": {"region": "us-east-1", "account_id": "740868193459"},
-    "non-prod/shared-services-non-prod/us-east-1": {"region": "us-east-1", "account_id": "740868193459"},
+    "non-prod/shared-services-non-prod/global": {"region": "us-east-1", "account_id": "333333333333"},
+    "non-prod/shared-services-non-prod/us-east-1": {"region": "us-east-1", "account_id": "333333333333"},
 }
 
 
@@ -164,7 +164,7 @@ class ResolveTest(unittest.TestCase):
             REF_NAME="main",
         )
         self.assertEqual(r["project"], "github")
-        self.assertEqual(r["regional"][0]["role_arn"], "arn:aws:iam::030388906125:role/github-github-apply")
+        self.assertEqual(r["regional"][0]["role_arn"], "arn:aws:iam::111111111111:role/github-github-apply")
 
     # Manual runs
     def test_dispatch_single_region(self):
@@ -232,8 +232,8 @@ class ResolveTest(unittest.TestCase):
         )
         self.assertTrue(all(d["region"] == "us-east-1" for d in r["global"]))
         roles = {d["path"]: d["role_arn"] for d in r["definitions"]}
-        self.assertEqual(roles["prod/network-prod/global"], "arn:aws:iam::030388906125:role/platform-pipeline")
-        self.assertEqual(roles["prod/shared-services-prod/us-west-2"], "arn:aws:iam::493093379423:role/platform-pipeline")
+        self.assertEqual(roles["prod/network-prod/global"], "arn:aws:iam::111111111111:role/platform-pipeline")
+        self.assertEqual(roles["prod/shared-services-prod/us-west-2"], "arn:aws:iam::555555555555:role/platform-pipeline")
 
     def test_management_pr_into_development_plans_every_non_prod_account(self):
         r = self.run_management(EVENT_NAME="pull_request", BASE_REF="development", REF_NAME="4/merge")
@@ -241,7 +241,7 @@ class ResolveTest(unittest.TestCase):
         self.assertEqual(
             sorted({d["role_arn"] for d in r["definitions"]}),
             [
-                "arn:aws:iam::740868193459:role/platform-pipeline-plan",
+                "arn:aws:iam::333333333333:role/platform-pipeline-plan",
                 "arn:aws:iam::444444444444:role/platform-pipeline-plan",
             ],
         )
