@@ -104,7 +104,7 @@ jobs:
           persist-credentials: false
 
       - id: resolve
-        uses: killers-technology/infrastructure-workflows/.github/actions/resolve@v3.2.0
+        uses: killers-technology/infrastructure-workflows/.github/actions/resolve@v3.3.0
         with:
           plan-role: ${{ inputs.plan-role }}
           apply-role: ${{ inputs.apply-role }}
@@ -121,12 +121,12 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: killers-technology/infrastructure-workflows/.github/actions/module-access@v3.2.0
+      - uses: killers-technology/infrastructure-workflows/.github/actions/module-access@v3.3.0
         with:
           client-id: ${{ vars.MODULES_APP_CLIENT_ID }}
           private-key: ${{ secrets.MODULES_APP_PRIVATE_KEY }}
 
-      - uses: killers-technology/infrastructure-workflows/.github/actions/static-checks@v3.2.0
+      - uses: killers-technology/infrastructure-workflows/.github/actions/static-checks@v3.3.0
         with:
           terraform-version: ${{ inputs.terraform-version }}
 
@@ -154,7 +154,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: killers-technology/infrastructure-workflows/.github/actions/module-access@v3.2.0
+      - uses: killers-technology/infrastructure-workflows/.github/actions/module-access@v3.3.0
         with:
           client-id: ${{ vars.MODULES_APP_CLIENT_ID }}
           private-key: ${{ secrets.MODULES_APP_PRIVATE_KEY }}
@@ -295,7 +295,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: killers-technology/infrastructure-workflows/.github/actions/module-access@v3.2.0
+      - uses: killers-technology/infrastructure-workflows/.github/actions/module-access@v3.3.0
         with:
           client-id: ${{ vars.MODULES_APP_CLIENT_ID }}
           private-key: ${{ secrets.MODULES_APP_PRIVATE_KEY }}
@@ -367,7 +367,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: killers-technology/infrastructure-workflows/.github/actions/module-access@v3.2.0
+      - uses: killers-technology/infrastructure-workflows/.github/actions/module-access@v3.3.0
         with:
           client-id: ${{ vars.MODULES_APP_CLIENT_ID }}
           private-key: ${{ secrets.MODULES_APP_PRIVATE_KEY }}

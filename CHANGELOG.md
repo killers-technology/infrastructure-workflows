@@ -1,5 +1,11 @@
 # Changelog
 
+## 3.3.0
+
+### Features
+
+* **module:** reusable workflow for module repositories (checks on every pull request, release from main)
+
 ## 3.2.0
 
 The version every infrastructure repository in this example pins. Entries above this one are written by semantic-release on each release (see README.md, "Versioning and release").

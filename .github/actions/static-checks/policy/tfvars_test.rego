@@ -6,7 +6,7 @@ import data.tfvars
 
 definition(contents) := [{"path": "definitions/prod/us-west-2/terraform.tfvars", "contents": contents}]
 
-good := {"account_id": "111111111111", "region": "us-west-2", "environment": "prod"}
+good := {"account_id": "030388906125", "region": "us-west-2", "environment": "prod"}
 
 has(substring, contents) if {
 	messages := tfvars.deny with input as definition(contents)
@@ -38,8 +38,8 @@ test_missing_account_id_fails if {
 }
 
 test_numeric_account_id_fails if {
-	# account_id = 111111111111 (unquoted) would lose leading zeros in some accounts
-	has("must set account_id", object.union(good, {"account_id": 111111111111}))
+	# account_id = 030388906125 (unquoted) would lose leading zeros in some accounts
+	has("must set account_id", object.union(good, {"account_id": 030388906125}))
 }
 
 test_short_account_id_fails if {
